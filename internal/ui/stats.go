@@ -11,11 +11,8 @@ var StatsTemplate *template.Template
 
 // Initialize initializes the UI templates
 func Initialize() {
-	var err error
-
 	// Define our HTML template with HTMX integration
-	const statsTemplateText = `
-<!DOCTYPE html>
+	const statsHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -194,8 +191,7 @@ func Initialize() {
 
     <!-- Stats container that will be refreshed via HTMX -->
     <div id="stats-container" hx-get="/stats/data" hx-trigger="load, every 1s" hx-swap="innerHTML">
-        <!-- Initial loading state -->
-        <p>Loading statistics...</p>
+        {{template "statsData" .}}
     </div>
     
     <!-- Refresh indicator -->
@@ -231,11 +227,9 @@ func Initialize() {
         setInterval(updateServerStatus, 2000);
     </script>
 </body>
-</html>
-`
+</html>`
 
-	const statsDataTemplateText = `
-<div class="stats-dashboard">
+	const statsDataHTML = `<div class="stats-dashboard">
     <!-- Server overview -->
     <div class="stat-card server-overview-card">
         <div class="stat-group">Server Overview</div>
@@ -321,22 +315,22 @@ func Initialize() {
             <div class="stat-value emphasized">{{.p99_response_time}}</div>
         </div>
     </div>
-</div>
-`
+</div>`
 
-	// Combine templates
-	templateText := statsTemplateText
+	// Create the template
+	var err error
+	StatsTemplate = template.New("stats")
 	
-	// Parse the template
-	StatsTemplate, err = template.New("stats").Parse(templateText)
+	// Parse the main template first
+	_, err = StatsTemplate.Parse(statsHTML)
 	if err != nil {
 		log.Fatalf("Failed to parse stats template: %v", err)
 	}
-
-	// Add the data template
-	StatsTemplate, err = StatsTemplate.New("statsData").Parse(statsDataTemplateText)
+	
+	// Parse the data template
+	_, err = StatsTemplate.New("statsData").Parse(statsDataHTML)
 	if err != nil {
-		log.Fatalf("Failed to parse stats data template: %v", err)
+		log.Fatalf("Failed to parse statsData template: %v", err)
 	}
 }
 
