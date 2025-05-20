@@ -14,11 +14,4 @@ services:
         value: 10000 # Render assigns a port for your service
       - key: GO_ENV
         value: production
-    buildFilter:
-      paths:
-      - cmd/**/*.go
-      - internal/**/*.go
-      - Makefile
-      - go.mod
-      - go.sum
-      - render.yaml
+    
