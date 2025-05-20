@@ -293,6 +293,10 @@ func (s *Server) handleGenerateNames(w http.ResponseWriter, r *http.Request) {
 
 // handleStats handles the statistics display request
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	// Force metrics update before responding
+	s.metrics.UpdateMemoryUsage()
+	s.metrics.UpdateCPUUsage()
+	
 	// Check if this is a request for the HTML page or for the stats data
 	if r.URL.Path == "/stats/data" {
 		// Return just the stats data for HTMX to update
@@ -300,6 +304,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		
 		// Get the stats data
 		metrics := s.metrics.GetCurrentMetrics()
+		
+		// Set cache control headers to prevent caching
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		
 		// Execute the template with the stats data
 		if err := ui.StatsTemplate.ExecuteTemplate(w, "statsData", metrics); err != nil {
@@ -311,6 +320,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	
 	// Return the full HTML page
 	w.Header().Set("Content-Type", "text/html")
+	
+	// Set cache control headers to prevent caching
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 	
 	// Execute the template with the stats data
 	metrics := s.metrics.GetCurrentMetrics()

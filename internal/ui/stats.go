@@ -29,78 +29,155 @@ func Initialize() {
             max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
-            background-color: #f9f9f9;
+            background-color: #f0f2f5;
             color: #333;
         }
         .stats-dashboard {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 20px;
             margin-top: 20px;
         }
         .stat-card {
             background-color: white;
-            border-radius: 8px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+            border-top: 4px solid #4361ee;
         }
         .stat-card:hover {
             transform: translateY(-5px);
-            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
         }
         .stat-name {
-            font-size: 1rem;
+            font-size: 1.1rem;
             color: #666;
-            margin-bottom: 5px;
+            margin-bottom: 8px;
+            font-weight: 500;
         }
         .stat-value {
-            font-size: 1.75rem;
-            font-weight: 600;
+            font-size: 2rem;
+            font-weight: 700;
             margin-bottom: 0;
+            color: #2d3748;
         }
         .server-state {
-            margin-bottom: 20px;
-            padding: 15px;
-            border-radius: 8px;
+            margin-bottom: 25px;
+            padding: 18px;
+            border-radius: 12px;
             text-align: center;
             font-weight: bold;
+            font-size: 1.2rem;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         }
         .server-online {
             background-color: #d4edda;
             color: #155724;
+            border-left: 5px solid #28a745;
         }
         .server-offline {
             background-color: #f8d7da;
             color: #721c24;
+            border-left: 5px solid #dc3545;
         }
         .stat-group {
-            margin-bottom: 10px;
-            font-size: 1.2rem;
+            margin-bottom: 15px;
+            font-size: 1.3rem;
             font-weight: bold;
             color: #2c3e50;
+            border-bottom: 2px solid #eaeaea;
+            padding-bottom: 8px;
         }
         header {
             margin-bottom: 30px;
-            border-bottom: 1px solid #eee;
-            padding-bottom: 10px;
+            border-bottom: 2px solid #eaeaea;
+            padding-bottom: 20px;
+            text-align: center;
         }
         h1 {
             color: #2c3e50;
-            margin-bottom: 5px;
+            margin-bottom: 10px;
+            font-size: 2.5rem;
         }
         .subtitle {
             color: #7f8c8d;
             font-style: italic;
+            font-size: 1.2rem;
         }
         .response-times {
             grid-column: 1 / -1;
+            background-color: #ebf4ff;
+            border-top: 4px solid #3182ce;
         }
         .response-card {
-            background-color: #f8f9fa;
-            padding: 15px;
+            background-color: white;
+            padding: 20px;
             border-radius: 8px;
-            border-left: 4px solid #4299e1;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+            border-left: 4px solid #3182ce;
+        }
+        
+        /* Color-coded categories */
+        .server-overview-card {
+            border-top-color: #4299e1; /* Blue */
+        }
+        .memory-cpu-card {
+            border-top-color: #48bb78; /* Green */
+        }
+        .request-stats-card {
+            border-top-color: #ed8936; /* Orange */
+        }
+        .capacity-card {
+            border-top-color: #9f7aea; /* Purple */
+        }
+        
+        /* Making values more readable */
+        .emphasized {
+            color: #4299e1;
+            font-weight: 700;
+        }
+        
+        /* Animated refresh indicator */
+        .refresh-indicator {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: rgba(0,0,0,0.7);
+            color: white;
+            padding: 8px 15px;
+            border-radius: 30px;
+            font-size: 0.9rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .refresh-dot {
+            height: 10px;
+            width: 10px;
+            background-color: #4caf50;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; }
+            100% { opacity: 0.5; }
+        }
+        
+        /* Responsive improvements */
+        @media (max-width: 768px) {
+            .stats-dashboard {
+                grid-template-columns: 1fr;
+            }
+            .stat-value {
+                font-size: 1.5rem;
+            }
+            h1 {
+                font-size: 2rem;
+            }
         }
     </style>
 </head>
@@ -116,9 +193,15 @@ func Initialize() {
     </div>
 
     <!-- Stats container that will be refreshed via HTMX -->
-    <div id="stats-container" hx-get="/stats/data" hx-trigger="load, every 2s" hx-swap="innerHTML">
+    <div id="stats-container" hx-get="/stats/data" hx-trigger="load, every 1s" hx-swap="innerHTML">
         <!-- Initial loading state -->
         <p>Loading statistics...</p>
+    </div>
+    
+    <!-- Refresh indicator -->
+    <div class="refresh-indicator">
+        <span class="refresh-dot"></span>
+        <span>Updating live</span>
     </div>
 
     <script>
@@ -143,9 +226,9 @@ func Initialize() {
                 });
         }
 
-        // Update server status initially and every 3 seconds
+        // Update server status initially and every 2 seconds
         updateServerStatus();
-        setInterval(updateServerStatus, 3000);
+        setInterval(updateServerStatus, 2000);
     </script>
 </body>
 </html>
@@ -154,72 +237,72 @@ func Initialize() {
 	const statsDataTemplateText = `
 <div class="stats-dashboard">
     <!-- Server overview -->
-    <div class="stat-card">
+    <div class="stat-card server-overview-card">
         <div class="stat-group">Server Overview</div>
         <div class="stat-name">Uptime</div>
-        <div class="stat-value">{{.uptime}}</div>
+        <div class="stat-value emphasized">{{.uptime}}</div>
     </div>
     
-    <div class="stat-card">
-        <div class="stat-group">Memory & CPU</div>
-        <div class="stat-name">Memory Usage</div>
-        <div class="stat-value">{{.memory_usage}}</div>
+    <div class="stat-card memory-cpu-card">
+        <div class="stat-group">Memory Usage</div>
+        <div class="stat-name">Current Memory</div>
+        <div class="stat-value emphasized">{{.memory_usage}}</div>
     </div>
     
-    <div class="stat-card">
-        <div class="stat-group">Memory & CPU</div>
-        <div class="stat-name">CPU Usage</div>
-        <div class="stat-value">{{.cpu_usage}}</div>
+    <div class="stat-card memory-cpu-card">
+        <div class="stat-group">CPU Usage</div>
+        <div class="stat-name">Current CPU</div>
+        <div class="stat-value emphasized">{{.cpu_usage}}</div>
     </div>
     
     <!-- Request statistics -->
-    <div class="stat-card">
+    <div class="stat-card request-stats-card">
         <div class="stat-group">Request Statistics</div>
         <div class="stat-name">Total Requests</div>
-        <div class="stat-value">{{.requests_total}}</div>
+        <div class="stat-value emphasized">{{.requests_total}}</div>
     </div>
     
-    <div class="stat-card">
-        <div class="stat-group">Request Statistics</div>
-        <div class="stat-name">Successful Requests</div>
-        <div class="stat-value">{{.requests_succeeded}}</div>
+    <div class="stat-card request-stats-card">
+        <div class="stat-group">Request Success</div>
+        <div class="stat-name">Succeeded</div>
+        <div class="stat-value emphasized">{{.requests_succeeded}}</div>
     </div>
     
-    <div class="stat-card">
-        <div class="stat-group">Request Statistics</div>
-        <div class="stat-name">Failed Requests</div>
-        <div class="stat-value">{{.requests_failed}}</div>
+    <div class="stat-card request-stats-card">
+        <div class="stat-group">Request Failures</div>
+        <div class="stat-name">Failed</div>
+        <div class="stat-value emphasized">{{.requests_failed}}</div>
     </div>
     
-    <div class="stat-card">
-        <div class="stat-group">Request Statistics</div>
+    <div class="stat-card request-stats-card">
+        <div class="stat-group">Request Rate</div>
         <div class="stat-name">Requests Per Second</div>
-        <div class="stat-value">{{.requests_per_second}}</div>
+        <div class="stat-value emphasized">{{.requests_per_second}}</div>
     </div>
     
-    <div class="stat-card">
-        <div class="stat-group">Request Statistics</div>
-        <div class="stat-name">Success Rate</div>
-        <div class="stat-value">{{.success_rate}}</div>
+    <div class="stat-card request-stats-card">
+        <div class="stat-group">Success Rate</div>
+        <div class="stat-name">Request Success Rate</div>
+        <div class="stat-value emphasized">{{.success_rate}}</div>
     </div>
     
     <!-- Capacity information -->
-    <div class="stat-card">
+    <div class="stat-card capacity-card">
         <div class="stat-group">Server Capacity</div>
         <div class="stat-name">Current Concurrent Requests</div>
-        <div class="stat-value">{{.concurrent_requests}}</div>
+        <div class="stat-value emphasized">{{.concurrent_requests}}</div>
     </div>
     
-    <div class="stat-card">
-        <div class="stat-group">Server Capacity</div>
-        <div class="stat-name">Maximum Concurrent</div>
-        <div class="stat-value">{{.max_concurrent}}</div>
+    <div class="stat-card capacity-card">
+        <div class="stat-group">Maximum Capacity</div>
+        <div class="stat-name">Max Concurrent</div>
+        <div class="stat-value emphasized">{{.max_concurrent}}</div>
     </div>
     
-    <div class="stat-card">
-        <div class="stat-group">Server Capacity</div>
-        <div class="stat-name">Server Load</div>
-        <div class="stat-value">{{.server_load}}</div>
+    <div class="stat-card capacity-card">
+        <div class="stat-group">Server Load</div>
+        <div class="stat-name">Current Load</div>
+        <div class="stat-value emphasized">{{.server_load}}</div>
     </div>
     
     <!-- Response time metrics in a wider card -->
@@ -227,15 +310,15 @@ func Initialize() {
         <div class="stat-group">Response Time Metrics</div>
         <div class="response-card">
             <div class="stat-name">50th Percentile (P50)</div>
-            <div class="stat-value">{{.p50_response_time}}</div>
+            <div class="stat-value emphasized">{{.p50_response_time}}</div>
         </div>
-        <div class="response-card" style="margin-top: 10px;">
+        <div class="response-card">
             <div class="stat-name">90th Percentile (P90)</div>
-            <div class="stat-value">{{.p90_response_time}}</div>
+            <div class="stat-value emphasized">{{.p90_response_time}}</div>
         </div>
-        <div class="response-card" style="margin-top: 10px;">
+        <div class="response-card">
             <div class="stat-name">99th Percentile (P99)</div>
-            <div class="stat-value">{{.p99_response_time}}</div>
+            <div class="stat-value emphasized">{{.p99_response_time}}</div>
         </div>
     </div>
 </div>

@@ -340,3 +340,12 @@ func (m *MetricsCollector) GetAverageResponseTime() time.Duration {
 func (m *MetricsCollector) GetUptime() time.Duration {
 	return time.Since(m.startTime)
 }
+
+// Make the update methods public to allow direct updating
+func (m *MetricsCollector) UpdateMemoryUsage() {
+	m.updateMemoryUsage()
+}
+
+func (m *MetricsCollector) UpdateCPUUsage() {
+	m.updateCPUUsage()
+}
