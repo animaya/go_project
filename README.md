@@ -178,3 +178,9 @@ This script:
 - Enhanced rate limiting for distributed environments
 - Dynamic worker pool sizing based on load
 - Real-time monitoring dashboard
+
+## Deployment
+
+This project can be deployed to Render.com using the included `render.yaml` configuration file.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed instructions on how to deploy the application to Render.com.
