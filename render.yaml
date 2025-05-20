@@ -3,8 +3,8 @@ services:
     name: go-name-generator
     env: go
     region: oregon # Choose the appropriate region
-    buildCommand: make build
-    startCommand: ./bin/server
+    buildCommand: go build -tags netgo -ldflags '-s -w' -o app
+    startCommand: ./app
     healthCheckPath: /stats
     autoDeploy: true
     numInstances: 1 # Scale this up for more concurrency
