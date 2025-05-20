@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/amirahmetzanov/go_project/internal/cache"
@@ -114,9 +115,15 @@ func NewServer(options ServerOptions) *Server {
 		options:       options,
 	}
 	
+	// Get port from environment variable with fallback to 8080
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	
 	// Create the HTTP server
 	server.httpServer = &http.Server{
-		Addr:         ":8080",
+		Addr:         ":" + port,
 		Handler:      server.createRouter(),
 		ReadTimeout:  options.ReadTimeout,
 		WriteTimeout: options.WriteTimeout,
@@ -344,7 +351,12 @@ func (s *Server) Start() error {
 	// Initialize UI templates
 	ui.Initialize()
 	
-	log.Printf("Starting server on %s", s.httpServer.Addr)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	
+	log.Printf("Starting server on port %s", port)
 	return s.httpServer.ListenAndServe()
 }
 

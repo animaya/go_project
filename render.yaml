@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: go-name-generator
+    env: go
+    region: oregon # Choose the appropriate region
+    buildCommand: make build
+    startCommand: ./bin/server
+    healthCheckPath: /stats
+    autoDeploy: true
+    numInstances: 1 # Scale this up for more concurrency
+    plan: starter # Choose appropriate plan: starter, starter-plus, standard, etc.
+    envVars:
+      - key: PORT
+        value: 10000 # Render assigns a port for your service
+      - key: GO_ENV
+        value: production
+    buildFilter:
+      paths:
+      - cmd/**/*.go
+      - internal/**/*.go
+      - Makefile
+      - go.mod
+      - go.sum
+      - render.yaml
