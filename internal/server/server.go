@@ -43,12 +43,12 @@ type ServerOptions struct {
 // DefaultServerOptions returns the default server options
 func DefaultServerOptions() ServerOptions {
 	return ServerOptions{
-		MaxConcurrentRequests: 1000,
-		RequestRateLimit:      500, // 500 requests per second
-		CacheSize:             1000,
-		CacheExpiration:       5 * time.Minute,
-		ReadTimeout:           5 * time.Second,
-		WriteTimeout:          10 * time.Second,
+		MaxConcurrentRequests: 5000,         // Significantly increased from 2000 to 5000
+		RequestRateLimit:      2000,         // Doubled from 1000 to 2000 requests per second
+		CacheSize:             5000,         // Significantly increased cache size for high concurrency
+		CacheExpiration:       10 * time.Minute, // Doubled cache expiration to reduce computation
+		ReadTimeout:           15 * time.Second, // Increased for very high concurrent load
+		WriteTimeout:          20 * time.Second, // Increased for very high concurrent load
 		IdleTimeout:           60 * time.Second,
 	}
 }
@@ -80,25 +80,25 @@ func NewServer(options ServerOptions) *Server {
 	// Create a metrics collector
 	metricsCollector := metrics.NewMetricsCollector(options.MaxConcurrentRequests)
 	
-	// Create a name generator
-	nameGenerator := generator.NewNameGenerator(4)
+	// Create a name generator with many more workers for extreme concurrency
+	nameGenerator := generator.NewNameGenerator(16) // Increased from 8 to 16 workers
 	
-	// Create a cache
+	// Create a cache with many more shards for extreme concurrency
 	cacheInstance := cache.NewConcurrentLRUCache(
 		options.CacheSize,
-		16, // 16 shards for concurrency
+		64, // Significantly increased from 32 to 64 shards for extreme concurrency
 		options.CacheExpiration,
 		options.CacheExpiration/2, // Cleanup at half the expiration time
 	)
 	
 	// Create a rate limiter
-	// Use a token bucket rate limiter with 10x burst capacity
-	burstCapacity := int64(options.RequestRateLimit * 10)
+	// Use a token bucket rate limiter with 30x burst capacity - extreme burst capacity
+	burstCapacity := int64(options.RequestRateLimit * 30)
 	tokenLimiter := ratelimit.NewTokenBucketLimiter(options.RequestRateLimit, burstCapacity)
 	
-	// Create a sliding window rate limiter for additional protection
+	// Create a sliding window rate limiter with much higher allowance
 	slidingLimiter := ratelimit.NewSlidingWindowLimiter(
-		int64(options.RequestRateLimit),
+		int64(options.RequestRateLimit*2.0), // Allow double the requests in sliding window
 		time.Second,
 	)
 	
@@ -191,13 +191,18 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 // rateLimitMiddleware applies rate limiting to requests
 func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Create a context with a timeout
-		ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+		// Create a context with a timeout - increased to 2 seconds
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		
 		// Check the rate limiter
 		if !s.rateLimiter.Allow(ctx) {
-			http.Error(w, "Rate limit exceeded, try again later", http.StatusTooManyRequests)
+			// Return a more informative error message with retry-after header
+			w.Header().Set("Retry-After", "1") // Suggest client to retry after 1 second
+			http.Error(w, "Rate limit exceeded, please try again later", http.StatusTooManyRequests)
+			
+			// Log rate limiting events to help diagnose issues
+			log.Printf("Rate limit exceeded for request from %s to %s", r.RemoteAddr, r.URL.Path)
 			return
 		}
 		

@@ -73,7 +73,7 @@ var (
 func GetDefaultGenerator() *NameGenerator {
 	defaultGeneratorOnce.Do(func() {
 		// Use number of CPU cores as the number of workers
-		numWorkers := 4
+		numWorkers := 8 // Increased from 4 to 8 workers
 		DefaultGenerator = NewNameGenerator(numWorkers)
 	})
 	

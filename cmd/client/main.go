@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -110,74 +111,123 @@ func sendRequest(serverURL string, stats *ClientStats, wg *sync.WaitGroup) {
 		return
 	}
 	
-	// Create request
-	req, err := http.NewRequest("POST", serverURL, bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		log.Printf("Error creating request: %v", err)
+	// Implement exponential backoff for retries
+	maxRetries := 3
+	baseDelay := 100 * time.Millisecond
+	
+	var resp *http.Response
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Create request
+		req, err := http.NewRequest("POST", serverURL, bytes.NewBuffer(payloadBytes))
+		if err != nil {
+			log.Printf("Error creating request: %v", err)
+			atomic.AddUint64(&stats.FailedRequests, 1)
+			stats.IncrementError(fmt.Sprintf("create: %v", err))
+			return
+		}
+		
+		// Set headers
+		req.Header.Set("Content-Type", "application/json")
+		
+		// Send request and measure time
+		startTime := time.Now()
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+		resp, err = client.Do(req)
+		latency := time.Since(startTime).Milliseconds()
+		
+		// Update total requests counter (only on first attempt)
+		if attempt == 0 {
+			atomic.AddUint64(&stats.TotalRequests, 1)
+		}
+		
+		// Update latency statistics
+		atomic.AddUint64(&stats.TotalLatency, uint64(latency))
+		
+		// Update min latency (atomically)
+		for {
+			min := atomic.LoadUint64(&stats.MinLatency)
+			if min == 0 || uint64(latency) < min {
+				if atomic.CompareAndSwapUint64(&stats.MinLatency, min, uint64(latency)) {
+					break
+				}
+			} else {
+				break
+			}
+		}
+		
+		// Update max latency (atomically)
+		for {
+			max := atomic.LoadUint64(&stats.MaxLatency)
+			if uint64(latency) > max {
+				if atomic.CompareAndSwapUint64(&stats.MaxLatency, max, uint64(latency)) {
+					break
+				}
+			} else {
+				break
+			}
+		}
+		
+		// Check for errors
+		if err != nil {
+			if attempt == maxRetries {
+				log.Printf("Error sending request after %d retries: %v", maxRetries, err)
+				atomic.AddUint64(&stats.FailedRequests, 1)
+				stats.IncrementError(fmt.Sprintf("send: %v", err))
+				return
+			}
+			// Retry after a backoff delay
+			backoffDelay := baseDelay * time.Duration(1<<attempt)
+			time.Sleep(backoffDelay)
+			continue
+		}
+		
+		// Update status code counter
+		stats.IncrementStatusCode(resp.StatusCode)
+		
+		// Check for rate limiting (429 status)
+		if resp.StatusCode == http.StatusTooManyRequests {
+			// Get retry-after header or use default backoff
+			retryAfter := resp.Header.Get("Retry-After")
+			var retryDelay time.Duration
+			if retryAfter != "" {
+				// Parse retry-after value
+				if retrySeconds, err := strconv.Atoi(retryAfter); err == nil {
+					retryDelay = time.Duration(retrySeconds) * time.Second
+				} else {
+					retryDelay = baseDelay * time.Duration(1<<attempt)
+				}
+			} else {
+				retryDelay = baseDelay * time.Duration(1<<attempt)
+			}
+			
+			// Retry if we haven't exhausted retries
+			if attempt < maxRetries {
+				// Close the current response body before retrying
+				resp.Body.Close()
+				
+				// Wait before retrying
+				time.Sleep(retryDelay)
+				continue
+			}
+		}
+		
+		// Break the loop if we get a successful response or a non-retryable error
+		break
+	}
+	
+	// If we exhausted retries or got a non-200 response code
+	if resp == nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			log.Printf("Error response: %s", resp.Status)
+			resp.Body.Close()
+		}
 		atomic.AddUint64(&stats.FailedRequests, 1)
-		stats.IncrementError(fmt.Sprintf("create: %v", err))
 		return
 	}
 	
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	
-	// Send request and measure time
-	startTime := time.Now()
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-	resp, err := client.Do(req)
-	latency := time.Since(startTime).Milliseconds()
-	
-	// Update total requests counter
-	atomic.AddUint64(&stats.TotalRequests, 1)
-	
-	// Update latency statistics
-	atomic.AddUint64(&stats.TotalLatency, uint64(latency))
-	
-	// Update min latency (atomically)
-	for {
-		min := atomic.LoadUint64(&stats.MinLatency)
-		if min == 0 || uint64(latency) < min {
-			if atomic.CompareAndSwapUint64(&stats.MinLatency, min, uint64(latency)) {
-				break
-			}
-		} else {
-			break
-		}
-	}
-	
-	// Update max latency (atomically)
-	for {
-		max := atomic.LoadUint64(&stats.MaxLatency)
-		if uint64(latency) > max {
-			if atomic.CompareAndSwapUint64(&stats.MaxLatency, max, uint64(latency)) {
-				break
-			}
-		} else {
-			break
-		}
-	}
-	
-	// Check for errors
-	if err != nil {
-		log.Printf("Error sending request: %v", err)
-		atomic.AddUint64(&stats.FailedRequests, 1)
-		stats.IncrementError(fmt.Sprintf("send: %v", err))
-		return
-	}
 	defer resp.Body.Close()
-	
-	// Update status code counter
-	stats.IncrementStatusCode(resp.StatusCode)
-	
-	// Check response status
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Error response: %s", resp.Status)
-		atomic.AddUint64(&stats.FailedRequests, 1)
-		return
-	}
 	
 	// Parse response
 	var responsePayload ResponsePayload
@@ -304,8 +354,11 @@ func main() {
 					wg.Add(1)
 					sendRequest(*serverURL, stats, &wg)
 					
-					// Add some randomization to request timing
-					sleepTime := time.Duration(rand.Intn(100)) * time.Millisecond
+					// Add some randomization to request timing with jitter
+					// This helps avoid synchronized bursts of requests
+					baseJitter := time.Duration(100)
+					jitter := time.Duration(rand.Intn(200)) * time.Millisecond
+					sleepTime := baseJitter*time.Millisecond + jitter
 					time.Sleep(sleepTime)
 				}
 			}
