@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
+	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -35,6 +40,31 @@ type ClientStats struct {
 	TotalLatency       uint64 // in milliseconds
 	MaxLatency         uint64 // in milliseconds
 	MinLatency         uint64 // in milliseconds
+	StatusCodes        map[int]uint64
+	Errors             map[string]uint64
+	mutex              sync.RWMutex
+}
+
+// NewClientStats creates a new client stats instance
+func NewClientStats() *ClientStats {
+	return &ClientStats{
+		StatusCodes: make(map[int]uint64),
+		Errors:      make(map[string]uint64),
+	}
+}
+
+// IncrementStatusCode increments the count for a specific status code
+func (s *ClientStats) IncrementStatusCode(code int) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.StatusCodes[code]++
+}
+
+// IncrementError increments the count for a specific error
+func (s *ClientStats) IncrementError(err string) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.Errors[err]++
 }
 
 // generateRandomSessionID generates a random session ID
@@ -76,6 +106,7 @@ func sendRequest(serverURL string, stats *ClientStats, wg *sync.WaitGroup) {
 	if err != nil {
 		log.Printf("Error marshaling payload: %v", err)
 		atomic.AddUint64(&stats.FailedRequests, 1)
+		stats.IncrementError(fmt.Sprintf("marshal: %v", err))
 		return
 	}
 	
@@ -84,6 +115,7 @@ func sendRequest(serverURL string, stats *ClientStats, wg *sync.WaitGroup) {
 	if err != nil {
 		log.Printf("Error creating request: %v", err)
 		atomic.AddUint64(&stats.FailedRequests, 1)
+		stats.IncrementError(fmt.Sprintf("create: %v", err))
 		return
 	}
 	
@@ -132,9 +164,13 @@ func sendRequest(serverURL string, stats *ClientStats, wg *sync.WaitGroup) {
 	if err != nil {
 		log.Printf("Error sending request: %v", err)
 		atomic.AddUint64(&stats.FailedRequests, 1)
+		stats.IncrementError(fmt.Sprintf("send: %v", err))
 		return
 	}
 	defer resp.Body.Close()
+	
+	// Update status code counter
+	stats.IncrementStatusCode(resp.StatusCode)
 	
 	// Check response status
 	if resp.StatusCode != http.StatusOK {
@@ -148,6 +184,22 @@ func sendRequest(serverURL string, stats *ClientStats, wg *sync.WaitGroup) {
 	if err := json.NewDecoder(resp.Body).Decode(&responsePayload); err != nil {
 		log.Printf("Error decoding response: %v", err)
 		atomic.AddUint64(&stats.FailedRequests, 1)
+		stats.IncrementError(fmt.Sprintf("decode: %v", err))
+		return
+	}
+	
+	// Validate response
+	if responsePayload.SessionID != sessionID {
+		log.Printf("Session ID mismatch: expected %s, got %s", sessionID, responsePayload.SessionID)
+		atomic.AddUint64(&stats.FailedRequests, 1)
+		stats.IncrementError("session_id_mismatch")
+		return
+	}
+	
+	if len(responsePayload.Names) != numOfEntries {
+		log.Printf("Number of entries mismatch: expected %d, got %d", numOfEntries, len(responsePayload.Names))
+		atomic.AddUint64(&stats.FailedRequests, 1)
+		stats.IncrementError("num_entries_mismatch")
 		return
 	}
 	
@@ -179,6 +231,27 @@ func printStats(stats *ClientStats, duration time.Duration) {
 	fmt.Printf("Min Latency:          %d ms\n", minLatency)
 	fmt.Printf("Avg Latency:          %d ms\n", avgLatency)
 	fmt.Printf("Max Latency:          %d ms\n", maxLatency)
+	
+	// Print status code distribution
+	fmt.Println("\nStatus Code Distribution:")
+	stats.mutex.RLock()
+	for code, count := range stats.StatusCodes {
+		fmt.Printf("  %d: %d (%.2f%%)\n", code, count, float64(count)/float64(totalRequests)*100)
+	}
+	stats.mutex.RUnlock()
+	
+	// Print error distribution
+	fmt.Println("\nError Distribution:")
+	stats.mutex.RLock()
+	if len(stats.Errors) == 0 {
+		fmt.Println("  No errors")
+	} else {
+		for err, count := range stats.Errors {
+			fmt.Printf("  %s: %d (%.2f%%)\n", err, count, float64(count)/float64(totalRequests)*100)
+		}
+	}
+	stats.mutex.RUnlock()
+	
 	fmt.Println("================================================")
 }
 
@@ -187,20 +260,20 @@ func main() {
 	serverURL := flag.String("url", "http://localhost:8080/generate", "Server URL")
 	numClients := flag.Int("clients", 100, "Number of concurrent clients")
 	duration := flag.Duration("duration", 60*time.Second, "Test duration")
+	rampUp := flag.Duration("ramp-up", 5*time.Second, "Ramp-up duration")
+	statsInterval := flag.Duration("stats-interval", 5*time.Second, "Stats printing interval")
 	flag.Parse()
 	
 	// Initialize random seed
 	rand.Seed(time.Now().UnixNano())
 	
 	// Initialize statistics
-	stats := &ClientStats{
-		MinLatency: 0,
-		MaxLatency: 0,
-	}
+	stats := NewClientStats()
 	
 	// Print welcome message
 	fmt.Printf("Starting client simulator with %d concurrent clients for %s\n", *numClients, *duration)
 	fmt.Printf("Target server: %s\n", *serverURL)
+	fmt.Printf("Ramp-up duration: %s\n", *rampUp)
 	fmt.Println("Press Ctrl+C to stop the test early")
 	
 	// Create a WaitGroup to wait for all goroutines to finish
@@ -212,8 +285,16 @@ func main() {
 	// Start the test
 	stopTest := make(chan struct{})
 	
-	// Start client goroutines
+	// Calculate ramp-up interval
+	rampUpInterval := time.Duration(int64(*rampUp) / int64(*numClients))
+	
+	// Start client goroutines with ramp-up
 	for i := 0; i < *numClients; i++ {
+		// Add a delay for ramp-up
+		if *rampUp > 0 {
+			time.Sleep(rampUpInterval)
+		}
+		
 		go func() {
 			for {
 				select {
@@ -231,8 +312,8 @@ func main() {
 		}()
 	}
 	
-	// Print stats every 5 seconds during the test
-	ticker := time.NewTicker(5 * time.Second)
+	// Print stats every interval during the test
+	ticker := time.NewTicker(*statsInterval)
 	go func() {
 		for {
 			select {
@@ -244,8 +325,17 @@ func main() {
 		}
 	}()
 	
-	// Wait for the test duration
-	time.Sleep(*duration)
+	// Setup signal handling for graceful shutdown
+	signalCh := make(chan os.Signal, 1)
+	signal.Notify(signalCh, os.Interrupt, syscall.SIGTERM)
+	
+	// Wait for test duration or interrupt
+	select {
+	case <-time.After(*duration):
+		fmt.Println("Test duration reached, stopping...")
+	case sig := <-signalCh:
+		fmt.Printf("Received signal %v, stopping...\n", sig)
+	}
 	
 	// Stop all client goroutines
 	close(stopTest)
@@ -253,8 +343,19 @@ func main() {
 	// Stop the ticker
 	ticker.Stop()
 	
-	// Wait for all requests to finish
-	wg.Wait()
+	// Wait for all requests to finish (with timeout)
+	waitCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitCh)
+	}()
+	
+	select {
+	case <-waitCh:
+		// All requests completed
+	case <-time.After(5 * time.Second):
+		fmt.Println("Timed out waiting for requests to complete")
+	}
 	
 	// Calculate the actual test duration
 	actualDuration := time.Since(startTime)
@@ -262,4 +363,22 @@ func main() {
 	// Print final statistics
 	fmt.Println("\nTest completed!")
 	printStats(stats, actualDuration)
+	
+	// Print server stats
+	fmt.Println("\nFetching server statistics...")
+	resp, err := http.Get(strings.TrimSuffix(*serverURL, "/generate") + "/stats")
+	if err != nil {
+		fmt.Printf("Error fetching server stats: %v\n", err)
+	} else {
+		defer resp.Body.Close()
+		
+		// Read the response body
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Printf("Error reading server stats: %v\n", err)
+		} else {
+			fmt.Println("\nServer Statistics:")
+			fmt.Println(string(body))
+		}
+	}
 }

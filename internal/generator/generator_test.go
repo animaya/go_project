@@ -1,7 +1,11 @@
 package generator
 
 import (
+	"context"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestGenerateNames(t *testing.T) {
@@ -92,16 +96,152 @@ func TestGenerateNames(t *testing.T) {
 					}
 				}
 			}
-			
-			// Check for duplicates
-			nameSet := make(map[string]bool)
-			for _, name := range got {
-				if nameSet[name] {
-					// This is not necessarily an error, just log a warning
-					t.Logf("Warning: GenerateNames() returned duplicate name: %q", name)
-				}
-				nameSet[name] = true
+		})
+	}
+}
+
+func TestGenerateWithContext(t *testing.T) {
+	// Create a new name generator
+	generator := NewNameGenerator(4)
+	defer generator.Shutdown()
+	
+	// Test context cancellation
+	t.Run("ContextCancellation", func(t *testing.T) {
+		// Create a context that is already canceled
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+		
+		// Try to generate names with the canceled context
+		names := generator.GenerateWithContext(ctx, "A", 100)
+		
+		// Should return an empty slice or a partial result
+		if len(names) >= 100 {
+			t.Errorf("Expected context cancellation to limit results, got %d names", len(names))
+		}
+	})
+	
+	// Test context timeout
+	t.Run("ContextTimeout", func(t *testing.T) {
+		// Create a context with a short timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		
+		// Try to generate names with the timed-out context
+		names := generator.GenerateWithContext(ctx, "A", 10000) // Use a large number to ensure it takes longer than the timeout
+		
+		// Should return a partial result
+		if len(names) >= 10000 {
+			t.Errorf("Expected context timeout to limit results, got %d names", len(names))
+		}
+	})
+}
+
+func TestCaching(t *testing.T) {
+	// Create a new name generator
+	generator := NewNameGenerator(4)
+	defer generator.Shutdown()
+	
+	// Generate names first time
+	letter := "C"
+	count := 10
+	firstNames := generator.Generate(letter, count)
+	
+	// Generate names second time with same parameters
+	secondNames := generator.Generate(letter, count)
+	
+	// Check that the results are the same (from cache)
+	if len(firstNames) != len(secondNames) {
+		t.Errorf("Cache results have different lengths: first=%d, second=%d", len(firstNames), len(secondNames))
+	} else {
+		for i := 0; i < len(firstNames); i++ {
+			if firstNames[i] != secondNames[i] {
+				t.Errorf("Cache results differ at index %d: first=%q, second=%q", i, firstNames[i], secondNames[i])
 			}
+		}
+	}
+}
+
+func TestConcurrentGeneration(t *testing.T) {
+	// Create a new name generator
+	generator := NewNameGenerator(4)
+	defer generator.Shutdown()
+	
+	// Number of concurrent generations
+	numConcurrent := 100
+	
+	// Create a wait group
+	var wg sync.WaitGroup
+	wg.Add(numConcurrent)
+	
+	// Channel to collect errors
+	errCh := make(chan error, numConcurrent)
+	
+	// Generate names concurrently
+	for i := 0; i < numConcurrent; i++ {
+		go func(id int) {
+			defer wg.Done()
+			
+			// Use different letters to avoid cache hits
+			letter := string(rune('A' + id%26))
+			count := 5
+			
+			names := generator.Generate(letter, count)
+			
+			// Check if the correct number of names was generated
+			if len(names) != count {
+				errCh <- fmt.Errorf("generator %d: expected %d names, got %d", id, count, len(names))
+				return
+			}
+			
+			// Check if the names start with the correct letter
+			for j, name := range names {
+				if len(name) == 0 {
+					errCh <- fmt.Errorf("generator %d: empty name at index %d", id, j)
+					return
+				}
+				
+				if string(name[0]) != letter {
+					errCh <- fmt.Errorf("generator %d: name %q does not start with %q", id, name, letter)
+					return
+				}
+			}
+		}(i)
+	}
+	
+	// Wait for all goroutines to complete
+	wg.Wait()
+	close(errCh)
+	
+	// Check for errors
+	for err := range errCh {
+		t.Error(err)
+	}
+}
+
+func BenchmarkGenerateNames(b *testing.B) {
+	// Reset the generator to ensure we start fresh
+	DefaultGenerator = nil
+	
+	for _, count := range []int{1, 10, 100} {
+		b.Run(fmt.Sprintf("Count=%d", count), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				GenerateNames("A", count)
+			}
+		})
+	}
+}
+
+func BenchmarkGenerateNamesParallel(b *testing.B) {
+	// Reset the generator to ensure we start fresh
+	DefaultGenerator = nil
+	
+	for _, count := range []int{1, 10, 100} {
+		b.Run(fmt.Sprintf("Count=%d", count), func(b *testing.B) {
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					GenerateNames("A", count)
+				}
+			})
 		})
 	}
 }

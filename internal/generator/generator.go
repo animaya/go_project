@@ -1,9 +1,13 @@
 package generator
 
 import (
+	"context"
 	"math/rand"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/amirahmetzanov/go_project/internal/workerpool"
 )
 
 // NamesByLetter contains predefined name lists for each letter of the alphabet
@@ -36,13 +40,78 @@ var NamesByLetter = map[string][]string{
 	"Z": {"Zachary", "Zoe", "Zane", "Zelda", "Zeus", "Zara", "Zion", "Zara", "Zack", "Zahara", "Zeke", "Zella", "Zev", "Zinnia", "Zen", "Zendaya", "Zavier", "Zia", "Zach", "Zuri"},
 }
 
+// NameGenerator holds the worker pool for name generation
+type NameGenerator struct {
+	pool              *workerpool.WorkerPool
+	nameCacheMutex    sync.RWMutex
+	nameCache         map[string][]string // Cache for previously generated names
+	nameGeneratorSeed int64
+}
+
+// NewNameGenerator creates a new name generator with a worker pool
+func NewNameGenerator(numWorkers int) *NameGenerator {
+	// Create a new worker pool
+	pool := workerpool.New(numWorkers)
+	
+	// Create a new name generator
+	generator := &NameGenerator{
+		pool:              pool,
+		nameCache:         make(map[string][]string),
+		nameGeneratorSeed: time.Now().UnixNano(),
+	}
+	
+	return generator
+}
+
+// DefaultGenerator is the default global name generator instance
+var (
+	DefaultGenerator     *NameGenerator
+	defaultGeneratorOnce sync.Once
+)
+
+// GetDefaultGenerator returns the default name generator instance
+func GetDefaultGenerator() *NameGenerator {
+	defaultGeneratorOnce.Do(func() {
+		// Use number of CPU cores as the number of workers
+		numWorkers := 4
+		DefaultGenerator = NewNameGenerator(numWorkers)
+	})
+	
+	return DefaultGenerator
+}
+
+// getCacheKey returns a cache key for the given letter and count
+func getCacheKey(letter string, count int) string {
+	return letter + ":" + string(rune(count))
+}
+
 // GenerateNames generates a list of random names starting with the specified letter
+// This is now just a wrapper around the default generator
 func GenerateNames(letter string, count int) []string {
+	return GetDefaultGenerator().Generate(letter, count)
+}
+
+// GenerateNamesWithContext generates names with a context for cancellation
+func GenerateNamesWithContext(ctx context.Context, letter string, count int) []string {
+	return GetDefaultGenerator().GenerateWithContext(ctx, letter, count)
+}
+
+// Generate generates a list of random names starting with the specified letter
+func (g *NameGenerator) Generate(letter string, count int) []string {
+	// Create a default context with a reasonable timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	return g.GenerateWithContext(ctx, letter, count)
+}
+
+// GenerateWithContext generates a list of random names with a context for cancellation
+func (g *NameGenerator) GenerateWithContext(ctx context.Context, letter string, count int) []string {
 	// If count is zero or negative, return empty slice
 	if count <= 0 {
 		return []string{}
 	}
-
+	
 	// If no letter is specified, choose one randomly
 	if letter == "" {
 		letters := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"}
@@ -51,34 +120,89 @@ func GenerateNames(letter string, count int) []string {
 		// Convert letter to uppercase
 		letter = strings.ToUpper(string(letter[0]))
 	}
-
+	
 	// Get the list of names for the specified letter
 	namesList, ok := NamesByLetter[letter]
 	if !ok || len(namesList) == 0 {
 		// If no names exist for this letter, return an empty slice
 		return []string{}
 	}
-
+	
 	// If count is greater than the available names, limit it
 	if count > len(namesList) {
 		count = len(namesList)
 	}
-
-	// Generate random names in parallel
-	names := make([]string, count)
-	var wg sync.WaitGroup
-	wg.Add(count)
 	
-	for i := 0; i < count; i++ {
-		go func(index int) {
-			defer wg.Done()
-			// Randomly select a name from the list
-			randomIndex := rand.Intn(len(namesList))
-			names[index] = namesList[randomIndex]
-		}(i)
+	// Check if the names are already in the cache
+	cacheKey := getCacheKey(letter, count)
+	g.nameCacheMutex.RLock()
+	cachedNames, found := g.nameCache[cacheKey]
+	g.nameCacheMutex.RUnlock()
+	
+	if found && len(cachedNames) >= count {
+		// Return a copy of the cached names to avoid data races
+		result := make([]string, count)
+		copy(result, cachedNames[:count])
+		return result
 	}
 	
-	wg.Wait()
+	// Generate random names in parallel using the worker pool
+	names := make([]string, count)
+	tasks := make([]workerpool.Task, count)
+	
+	// Create a task for each name generation
+	for i := 0; i < count; i++ {
+		index := i // Capture the index in the closure
+		tasks[i] = func() interface{} {
+			// Create a source of randomness that's isolated to this task
+			taskRand := rand.New(rand.NewSource(time.Now().UnixNano() + int64(index)))
+			randomIndex := taskRand.Intn(len(namesList))
+			return namesList[randomIndex]
+		}
+	}
+	
+	// Submit tasks in batch and get results
+	resultCh := g.pool.SubmitBatch(tasks)
+	
+	// Process results as they come in
+	i := 0
+	for result := range resultCh {
+		if i >= count {
+			break
+		}
+		
+		// Check if the context has been canceled
+		select {
+		case <-ctx.Done():
+			// Context canceled, return what we have so far
+			return names[:i]
+		default:
+			// Continue processing
+		}
+		
+		// Get the name from the result
+		name, ok := result.Value.(string)
+		if ok {
+			names[i] = name
+			i++
+		}
+	}
+	
+	// Update the cache with the generated names
+	g.nameCacheMutex.Lock()
+	g.nameCache[cacheKey] = make([]string, len(names))
+	copy(g.nameCache[cacheKey], names)
+	g.nameCacheMutex.Unlock()
 	
 	return names
+}
+
+// Shutdown gracefully shuts down the name generator's worker pool
+func (g *NameGenerator) Shutdown() {
+	g.pool.Shutdown()
+}
+
+// ShutdownNow immediately shuts down the name generator's worker pool
+func (g *NameGenerator) ShutdownNow() {
+	g.pool.ShutdownNow()
 }

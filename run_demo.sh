@@ -43,10 +43,19 @@ curl -s http://localhost:8080/stats
 # Run the client with a small load
 echo ""
 echo "Running client simulator with 10 concurrent clients for 10 seconds..."
-./bin/client -clients=10 -duration=10s
+./bin/client -clients=10 -duration=10s -stats-interval=2s
 
 # Check server stats after load test
 echo "Checking server statistics after load test..."
+curl -s http://localhost:8080/stats
+
+# Run the client with a medium load
+echo ""
+echo "Running client simulator with 50 concurrent clients for 10 seconds..."
+./bin/client -clients=50 -duration=10s -ramp-up=5s -stats-interval=2s
+
+# Check server stats after medium load test
+echo "Checking server statistics after medium load test..."
 curl -s http://localhost:8080/stats
 
 # Give the user a chance to interact with the server
